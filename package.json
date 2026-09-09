@@ -11,6 +11,7 @@
   "workspaces": [
     "vendor/*",
     "packages/*/*",
+    "plugins/*",
     "native/system",
     "native/system/packages/*",
     "apps/*",

@@ -1,0 +1,6 @@
+- insert:
+    - id: agent-insights
+      name: dsh-plugin-agent-insights
+      config:
+        maxToolHistoryPerSession: 1000
+        logSummaryOnDisposed: true

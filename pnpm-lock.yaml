@@ -10695,6 +10695,34 @@ importers:
         specifier: workspace:^
         version: link:../../typert/protocol
 
+  plugins/dsh-plugin-agent-insights:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../vendor/schemastery
+        version: link:../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.2
+        version: link:../../vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: ^0.1.5-alpha.1
+        version: link:../../packages/core/agent
+      '@deepseek-ai/dsh-agent-loop':
+        specifier: ^0.1.5-alpha.1
+        version: link:../../packages/core/agent-loop
+      '@deepseek-ai/dsh-llm':
+        specifier: ^0.1.5-alpha.1
+        version: link:../../packages/llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: ^0.1.5-alpha.1
+        version: link:../../packages/core/session
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: ^0.1.5-alpha.1
+        version: link:../../packages/core/system-prompt
+      '@deepseek-ai/dsh-tools':
+        specifier: ^0.1.5-alpha.1
+        version: link:../../packages/core/tools
+
   python/sdk-runtime:
     dependencies:
       '@deepseek-ai/cordis':
