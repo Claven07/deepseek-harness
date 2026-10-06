@@ -9,6 +9,8 @@
  */
 import type {} from '@deepseek-ai/dsh-client-product-analytics/client'
 import type { ModelSelectionProjection } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { SessionReferenceAssertions } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { ComposerBlocks } from '../contract/composer-blocks.ts'
 import type { PlanProjection } from '@deepseek-ai/dsh-plan-mode/types'
 import type { GoalProjection } from '@deepseek-ai/dsh-goal/types'
 import type { Context } from '@deepseek-ai/cordis'
@@ -42,6 +44,11 @@ interface InputTriggerServiceFace {
 
 /** Attachment-send face resolved lazily to keep hub/service construction acyclic. */
 interface ConversationAttachmentFace {
+  readonly blocks: ComposerBlocks
+  sendSessionWithReferences(
+    session: SessionFace, assertions: SessionReferenceAssertions, attachmentIds: readonly DraftAttachmentId[],
+    mode: InputSubmitMode, signal?: AbortSignal,
+  ): Promise<SubmitOutcome>
   sendSession(
     session: SessionFace,
     text: string,
@@ -116,6 +123,11 @@ export class InputHub implements SessionInputResolver {
       popup: () => this.popup(actx),
       inbox: session.projections.faceOf('inbox') as ObservableSnapshot<InboxState | undefined>,
       defaultSink: (text, attachmentIds, mode, signal) => this.sink(session, text, attachmentIds, mode, signal),
+      canAssert: () => session.getSnapshot().subagent === null
+        && this.conversation().blocks.storeFor(session.sessionId).getSnapshot() === undefined,
+      referenceNotice: category => this.t(category === 'send-failed' ? 'reference.sendFailed' : 'reference.invalid'),
+      assertedSink: (assertions, attachmentIds, mode, signal) =>
+        this.conversation().sendSessionWithReferences(session, assertions, attachmentIds, mode, signal),
       steerQueue: () => { void this.steerQueue(session, shell) },
       commandAttachments: {
         serialize: async (ids) => {

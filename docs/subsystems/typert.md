@@ -331,6 +331,14 @@ interface TypertGateway {
     host: RemoteEventHostInfo,
   ): () => Promise<void>
   /**
+   * Register the configured admission check for `session.promptWithReferences`.
+   * The Gateway invokes it on the raw request parameter before its generated
+   * strict codec. Only one active registration is allowed.
+   * @param preflight - bounded, non-copying validation of the raw request.
+   * @returns a disposer that removes this exact registration.
+   */
+  registerAssertedRequestPreflight(preflight: (request: unknown) => void): () => void
+  /**
    * Invoke one live Remote method without assuming a carrier or response envelope.
    * @param request - decoded endpoint and named wire arguments.
    * @returns the business result without output decoding.
@@ -466,6 +474,13 @@ hasLiveClient(): boolean
  * @returns disposer removing this source and cancelling its active streams.
  */
 registerRemoteEvents( source: TypertRemoteEventSource, host: RemoteEventHostInfo, ): () => Promise<void>
+
+/**
+ * Register the Session Controller's bounded preflight for asserted prompts.
+ * @param preflight - non-copying validation of the raw asserted request.
+ * @returns a disposer that removes this exact registration.
+ */
+registerAssertedRequestPreflight(preflight: (request: unknown) => void): () => void
 
 /**
  * Invoke one live Remote method through strict generated reflection or SRC markers.

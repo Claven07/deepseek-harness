@@ -216,6 +216,7 @@ export class TypertGatewayService extends Service implements TypertGateway {
   private remoteEvents: RegisteredRemoteEventSource | undefined
   private readonly remoteEventClients = new Map<RemoteEventClientId, RemoteEventClient>()
   private readonly pendingRemoteEvents = new Map<RemoteEventId, PendingRemoteEvent>()
+  private assertedRequestPreflight: { readonly validate: (request: unknown) => void } | undefined
 
   /**
    * Register the Gateway against the active Typert registry.
@@ -319,6 +320,22 @@ export class TypertGatewayService extends Service implements TypertGateway {
         this.closeRemoteEvents(error)
       }
       await registration.done
+    }
+  }
+
+  /**
+   * Register the Session Controller's bounded preflight for asserted prompts.
+   * @param preflight - non-copying validation of the raw asserted request.
+   * @returns a disposer that removes this exact registration.
+   */
+  registerAssertedRequestPreflight(preflight: (request: unknown) => void): () => void {
+    if (this.assertedRequestPreflight !== undefined) {
+      throw new Error('typert gateway: asserted request preflight is already registered')
+    }
+    const registration = { validate: preflight }
+    this.assertedRequestPreflight = registration
+    return () => {
+      if (this.assertedRequestPreflight === registration) this.assertedRequestPreflight = undefined
     }
   }
 
@@ -702,6 +719,7 @@ export class TypertGatewayService extends Service implements TypertGateway {
   ): Promise<PreparedInvocation> {
     const endpoint = endpointOf(request.namespace, request.method)
     const descriptor = this.resolveDescriptor(request.namespace, request.method, endpoint)
+    this.preflightInput(descriptor, request.args, endpoint)
     assertExactArguments(request.args, descriptor, endpoint)
     const receiverContext = await this.resolveReceiverContext(descriptor, request.args, endpoint)
     const receiver: unknown = receiverContext.get(descriptor.service)
@@ -764,6 +782,39 @@ export class TypertGatewayService extends Service implements TypertGateway {
       )
     }
     return this.resolveSrcDescriptor(namespace, method, endpoint)
+  }
+
+  private preflightInput(
+    descriptor: InvocationDescriptor,
+    args: unknown,
+    endpoint: string,
+  ): void {
+    if (endpoint !== 'session/promptWithReferences') return
+    const parameter = descriptor.parameters.find(candidate => candidate.wire === 'request')
+    const registration = this.assertedRequestPreflight
+    if (descriptor.namespace !== 'session' || descriptor.service !== 'sessionController'
+      || descriptor.method !== 'promptWithReferences' || parameter?.source !== 'json'
+      || parameter.codec.mode !== 'strict' || registration === undefined) {
+      throw new TypertGatewayError(
+        'gateway/input-invalid',
+        endpoint,
+        'the asserted request admission preflight is unavailable',
+        { field: 'request' },
+      )
+    }
+    try {
+      if (typeof args !== 'object' || args === null || !isPlainObject(args)) return
+      const request = Object.getOwnPropertyDescriptor(args, parameter.wire)
+      registration.validate(request !== undefined && request.enumerable && 'value' in request ? request.value : undefined)
+    } catch (cause) {
+      if (remoteErrorOf(cause) !== undefined) throw cause
+      throw new TypertGatewayError(
+        'gateway/input-invalid',
+        endpoint,
+        'wire field "request" failed preflight validation',
+        { cause, field: 'request' },
+      )
+    }
   }
 
   private resolveSrcDescriptor(namespace: string, method: string, endpoint: string): InvocationDescriptor {

@@ -105,6 +105,11 @@ export class FixtureSession implements SessionFace {
     throw new Error(`test session "${this.sessionId}": prompt is not stubbed — supply it on the fixture's session face`)
   }
 
+  /** Separate fail-loud asserted transport stub. @returns never; fixtures must supply this method explicitly. */
+  promptWithReferences(): never {
+    throw new Error(`test session "${this.sessionId}": promptWithReferences is not stubbed — supply it on the fixture's session face`)
+  }
+
   /**
    * Minimal local-echo registration: mints an identity without touching the
    * fixture snapshot (submission echoes are client-only presentation state).

@@ -3,6 +3,7 @@
 import { hostname } from 'node:os'
 import { resolve } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-api-gateway'
 import type {} from '@deepseek-ai/dsh-fs'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -18,7 +19,9 @@ import {
   inspectApiSession,
   type ApiSessionAgentResult,
 } from './agent.ts'
-import { SessionCommandController } from './commands.ts'
+import { preflightAssertedRequest, SessionCommandController } from './commands.ts'
+import { ReferenceAssertionRegistry } from './reference-assertions.ts'
+import type { ReferenceAssertionConsumer } from './reference-assertions.ts'
 import { SessionControlController } from './control.ts'
 import { SessionHistoryController } from './history.ts'
 import { SessionFileReferences } from './file-references.ts'
@@ -49,6 +52,7 @@ import type {
   SessionPage,
   SessionPageRequest,
   SessionPromptRequest,
+  SessionPromptWithReferencesRequest,
   SessionPromptValue,
   SessionRenameRequest,
   SessionRenameValue,
@@ -64,6 +68,7 @@ import type {
 } from './types.ts'
 
 export type * from './types.ts'
+export type { ReferenceAssertionConsumer, ReferenceAssertionConsumption, ConsumeReferenceAssertions } from './reference-assertions.ts'
 export { ApiSessionNotFound } from './agent.ts'
 export { SessionFileReferences } from './file-references.ts'
 export { SessionSkillCatalog } from './skill-catalog.ts'
@@ -79,6 +84,8 @@ declare module '@deepseek-ai/cordis' {
 export interface Config {
   /** Override platform desktop-opener detection. */
   readonly nativeOpen?: boolean
+  /** Maximum pending, in-flight, and retained asserted admission receipts. */
+  readonly referenceAssertionCapacity?: number
 }
 
 /** Host integrations replaceable by direct unit tests. */
@@ -108,15 +115,18 @@ export class SessionController extends TypertRemoteService {
     'sessionProjections',
     'sessionQuery',
     'typert',
+    'typertGateway',
     'workspaceRegistry',
   ]
 
   static Config: z<Config> = z.object({
     nativeOpen: z.boolean(),
+    referenceAssertionCapacity: z.number().min(1).step(1).default(128),
   })
 
   private readonly agents: ApiSessionAgentController
   private readonly commands: SessionCommandController
+  private readonly referenceAssertions: ReferenceAssertionRegistry
   private readonly controlState: SessionControlController
   private readonly history: SessionHistoryController
   private readonly listState: ApiSessionList
@@ -136,7 +146,16 @@ export class SessionController extends TypertRemoteService {
     super(ctx, 'sessionController', { namespace: 'session' })
     installModelSelectionProjection(ctx)
     this.agents = new ApiSessionAgentController(ctx)
-    this.commands = new SessionCommandController(ctx, this.agents, process.cwd())
+    const referenceCapacity = config.referenceAssertionCapacity ?? 128
+    if (!Number.isSafeInteger(referenceCapacity) || referenceCapacity < 1) throw new Error('invalid reference assertion capacity')
+    this.referenceAssertions = new ReferenceAssertionRegistry(ctx, referenceCapacity)
+    this.commands = new SessionCommandController(ctx, this.agents, process.cwd(), this.referenceAssertions)
+    const gateway = ctx.get('typertGateway')
+    if (gateway !== undefined) {
+      ctx.effect(() => gateway.registerAssertedRequestPreflight((request: unknown) => {
+        preflightAssertedRequest(request, ctx.attachments.imageLimits)
+      }), 'session-controller: asserted request preflight')
+    }
     ctx.effect(() => ctx.fileUploads.registerAgentResolver(async (sessionId) => {
       const result = await this.agents.resolveAgent(sessionId)
       if ('error' in result) throw result.error
@@ -426,6 +445,26 @@ export class SessionController extends TypertRemoteService {
   prompt(request: SessionPromptRequest, signal: AbortSignal): Promise<SessionPromptValue> {
     signal.throwIfAborted()
     return this.commands.prompt(request)
+  }
+
+  /**
+   * Admit explicit reference intent through a distinct, fail-closed Remote route.
+   * @param request - immutable final text, spans, attachments, and request identity.
+   * @param signal - cancellation before Inbox insertion; does not withdraw accepted work.
+   * @returns acknowledgement of the single asserted admission.
+   */
+  @Remote('promptWithReferences')
+  promptWithReferences(request: SessionPromptWithReferencesRequest, signal: AbortSignal): Promise<SessionPromptValue> {
+    return this.commands.promptWithReferences(request, signal)
+  }
+
+  /**
+   * Lease the Host-only synchronous reference consumer; never exposed through Remote.
+   * @param consumer - adapter callback for live committed user messages.
+   * @returns the exclusive consumer lease, whose disposal revokes transient intent.
+   */
+  leaseReferenceAssertions(consumer: ReferenceAssertionConsumer): Disposable {
+    return this.referenceAssertions.lease(consumer)
   }
 
   /**

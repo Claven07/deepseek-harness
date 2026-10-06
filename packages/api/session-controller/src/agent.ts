@@ -15,6 +15,7 @@ import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-ses
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@deepseek-ai/dsh-typert-registry'
 import type { ModelSelection } from './types.ts'
+import { referenceAdmissionError } from './reference-assertions.ts'
 
 /** Cold Session identity absent from persistence. */
 export class ApiSessionNotFound extends Error {}
@@ -371,6 +372,46 @@ export class ApiSessionAgentController {
     const result = (this.imageAdmissionChains.get(agent) ?? Promise.resolve()).then(operation)
     this.imageAdmissionChains.set(agent, result.then(() => undefined, () => undefined))
     return result
+  }
+
+  /**
+   * Queue asserted image admission; cancellation releases its queued callback immediately.
+   * @param agent - live Agent that owns the image admission chain.
+   * @param operation - admission that checks cancellation before enqueue.
+   * @param signal - assertion owner's cancellation before enqueue.
+   * @returns admission result, or a fixed cancellation failure.
+   */
+  serializeReferenceImageAdmission<Value>(
+    agent: Agent, operation: () => Promise<Value>, signal: AbortSignal,
+  ): Promise<Value> {
+    return this.enqueueReferenceImageAdmission(agent, { operation }, signal)
+  }
+
+  private enqueueReferenceImageAdmission<Value>(
+    agent: Agent, queued: { operation?: () => Promise<Value> }, signal: AbortSignal,
+  ): Promise<Value> {
+    if (signal.aborted) return Promise.reject(referenceAdmissionError('canceled'))
+    const receipt = Promise.withResolvers<Value>()
+    const canceled = (): void => {
+      delete queued.operation
+      signal.removeEventListener('abort', canceled)
+      receipt.reject(referenceAdmissionError('canceled'))
+    }
+    signal.addEventListener('abort', canceled, { once: true })
+    const result = this.serializeImageAdmission(agent, () => {
+      const operation = queued.operation
+      delete queued.operation
+      if (operation === undefined) throw referenceAdmissionError('canceled')
+      return operation()
+    })
+    void result.then((value) => {
+      signal.removeEventListener('abort', canceled)
+      receipt.resolve(value)
+    }, (error) => {
+      signal.removeEventListener('abort', canceled)
+      receipt.reject(error)
+    })
+    return receipt.promise
   }
 
   /**

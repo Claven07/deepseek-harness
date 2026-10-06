@@ -201,6 +201,7 @@ export const SESSION_SEARCH_SNIPPET_MAX_CODE_POINTS = 240
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
+    'session/reference-rejected': Record<string, never>
     'session/provider-credentials-unavailable': Record<string, never>
     'session/provider-models-unavailable': { readonly provider: string }
     'session/model-unavailable': { readonly provider: string; readonly model: string }
@@ -338,6 +339,23 @@ export interface SessionPromptRequest {
   /** At least one non-whitespace text part or attachment. */
   readonly content: readonly PromptContentPart[]
   readonly clientTimeZone?: string
+}
+
+/** Half-open UTF-16 range explicitly declared as reference intent by the caller. */
+export interface SessionReferenceSpan {
+  readonly start: number
+  readonly end: number
+}
+
+/** Transient intent bound to the exact final prompt text; conveys no authority or correctness. */
+export interface SessionReferenceAssertions {
+  readonly text: string
+  readonly referenceSpans: readonly SessionReferenceSpan[]
+}
+
+/** Separate asserted admission; ordinary prompt requests carry no assertion fields. */
+export interface SessionPromptWithReferencesRequest extends SessionPromptRequest {
+  readonly referenceAssertions: SessionReferenceAssertions
 }
 
 /** Receipt after one prompt enters the target Agent inbox. */

@@ -26,6 +26,10 @@ import type { InputSubmitMode, MessageSubmission, MessageSubmissionState } from 
 import { SubmitMachine } from './machine.ts'
 import { DraftEditorRuntime } from './editor/runtime.ts'
 import type { EditorProjection } from './editor/projection.ts'
+import { $composerLayout } from './editor/projection.ts'
+import type { SessionReferenceAssertions } from '@deepseek-ai/dsh-api-session-controller/types'
+import { serializeReferenceAssertions, validateComposerReferences } from './reference-serialization.ts'
+import type { ReferenceDraftSnapshot } from './reference-serialization.ts'
 
 /** Popup face the shell needs (dismissal only; typed structurally to avoid a value import). */
 export interface PopupDismissFace {
@@ -56,6 +60,15 @@ export interface SessionInputDeps {
    * order (the empty-draft accelerated-Enter gesture); absent = unsupported.
    */
   steerQueue?: (() => void) | undefined
+  /** Ordinary Session availability, including takeover/subagent restrictions. */
+  canAssert?: () => boolean
+  /** Fixed-category localized notices; never receives text or spans. */
+  referenceNotice?: (category: string) => string
+  /** Distinct asserted transport; absence fails closed. */
+  assertedSink?: (
+    assertions: SessionReferenceAssertions, attachmentIds: readonly DraftAttachmentId[],
+    mode: InputSubmitMode, signal: AbortSignal,
+  ) => Promise<SubmitOutcome>
   /** The plain-message sink (send choreography / materialize fork — the hub owns it). */
   defaultSink(
     text: string,
@@ -90,6 +103,22 @@ function projectionContentChanged(prev: EditorProjection, next: EditorProjection
   return next.occurrences.some((occ, i) => {
     const old = prev.occurrences[i]
     return old === undefined || old.occurrenceId !== occ.occurrenceId || old.invalid !== occ.invalid
+  })
+}
+
+/** Release captured intent on disposal even when a chip serializer ignores cancellation. */
+function waitAssertedSerialization<Value>(pending: Promise<Value>, signal: AbortSignal): Promise<Value> {
+  return new Promise<Value>((resolve, reject) => {
+    const canceled = (): void => { reject(new Error('canceled')) }
+    if (signal.aborted) canceled()
+    else signal.addEventListener('abort', canceled, { once: true })
+    void pending.then((value) => {
+      signal.removeEventListener('abort', canceled)
+      resolve(value)
+    }, (error: unknown) => {
+      signal.removeEventListener('abort', canceled)
+      reject(error)
+    })
   })
 }
 
@@ -140,6 +169,7 @@ export class SessionInputShell implements SessionInput {
     return this.draftEditor.projection
   }
   private rev = 0
+  private referenceMarks: readonly TokenSpan[] = Object.freeze([])
   private readonly unregister: () => void
   private noticeSeq = 0
   private lastMirroredDraft = ''
@@ -167,7 +197,7 @@ export class SessionInputShell implements SessionInput {
 
   constructor(private readonly deps: SessionInputDeps) {
     this.draftEditor = new DraftEditorRuntime({
-      onUpdate: () => { this.onEditorUpdate() },
+      onUpdate: (mutation) => { this.onEditorUpdate(mutation) },
       openReference: (source, reference) =>
         this.deps.inputTriggers?.()?.openReference(source, reference) ?? false,
       activeClaimToken: () => this.activeClaimToken(),
@@ -182,14 +212,15 @@ export class SessionInputShell implements SessionInput {
   // ---- editor plumbing ----
 
   /** Re-project, run the claim watch, publish, and feed trigger tracking after every editor commit. */
-  private onEditorUpdate(): void {
+  private onEditorUpdate(contentMutation: boolean): void {
     const prev = this.draftEditor.refreshProjection()
     // Selection-only commits advance neither the revision nor the published
     // state: menus still track the caret below, while draftRev moves only
     // with content so a snapshot-built span (apply.ts) stays CAS-valid across
     // caret motion and subscribers do not re-render per caret move.
-    if (projectionContentChanged(prev, this.projection)) {
+    if (contentMutation || projectionContentChanged(prev, this.projection)) {
       this.rev += 1
+      this.referenceMarks = Object.freeze([])
       if (!this.restoringFailures && this.failedRestoreRev !== undefined) {
         this.failedDetached.clear()
         this.failedRestoreRev = undefined
@@ -213,7 +244,51 @@ export class SessionInputShell implements SessionInput {
    * @param text - the full next draft.
    */
   setDraft(text: string): void {
+    // Even an identical external replacement invalidates captured selection intent.
+    const beforeRev = this.rev
+    this.referenceMarks = Object.freeze([])
     this.draftEditor.setDraft(text)
+    if (this.rev === beforeRev) { this.rev += 1; this.publish() }
+  }
+
+  /**
+   * Mark ordinary selected text without editing any editor node or history entry.
+   * @param span - selection captured before an action takes focus.
+   * @returns whether the current draft accepted the intent.
+   */
+  markReference(span: TokenSpan): boolean {
+    const reject = (category: string): false => { this.referenceFailure(category); return false }
+    if (this.disposed || this.snapshot.phase !== 'plain' || this.projection.clipboardText.trimStart().startsWith('/')
+      || this.deps.canAssert?.() !== true || this.deps.assertedSink === undefined) return reject('unsupported-route')
+    if (span.draftRev !== this.rev) return reject('stale')
+    const marks = [...this.referenceMarks, Object.freeze({ ...span })].sort((a, b) => a.start - b.start)
+    const invalid = validateComposerReferences(this.projection.detectText, marks, false)
+    if (invalid !== undefined) return reject(invalid)
+    const intersectsChip = this.editor.getEditorState().read(() => $composerLayout().segments.some(segment =>
+      segment.kind === 'chip' && span.start < segment.detectStart + segment.detectLength && span.end > segment.detectStart))
+    if (intersectsChip) return reject('chip')
+    this.referenceMarks = Object.freeze(marks)
+    this.publish()
+    return true
+  }
+
+  private referenceFailure(category: string): void {
+    const text = this.deps.referenceNotice?.(category)
+    if (text !== undefined) this.notify('error', text)
+  }
+
+  private captureReferences(): ReferenceDraftSnapshot {
+    const projection = this.projection
+    const segments = this.editor.getEditorState().read(() => $composerLayout().segments.map(segment => Object.freeze({
+      kind: segment.kind, detectStart: segment.detectStart, detectLength: segment.detectLength,
+      clipboardStart: segment.clipboardStart, clipboardLength: segment.clipboardLength,
+    })))
+    return Object.freeze({
+      detectText: projection.detectText, clipboardText: projection.clipboardText,
+      segments: Object.freeze(segments), marks: this.referenceMarks,
+      occurrences: Object.freeze(projection.occurrences.map(occurrence => Object.freeze({ ...occurrence }))),
+      attachmentIds: Object.freeze([...this.attachmentIds]),
+    })
   }
 
   /** Append ordered attachment ids unless an admission transaction is locked. */
@@ -296,6 +371,19 @@ export class SessionInputShell implements SessionInput {
    */
   submit(mode: InputSubmitMode = 'queue', source?: 'click' | 'enter'): void {
     if (this.disposed) return
+    const references = this.referenceMarks.length === 0 ? undefined : this.captureReferences()
+    if (references !== undefined) {
+      const capturedRev = this.rev
+      const capturedPhase = this.snapshot.phase
+      this.referenceMarks = Object.freeze([])
+      this.publish()
+      if (capturedPhase !== 'plain' || references.clipboardText.trimStart().startsWith('/')
+        || this.deps.canAssert?.() !== true || this.deps.assertedSink === undefined
+        || references.marks.some(mark => mark.draftRev !== capturedRev)) {
+        this.referenceFailure('unsupported-route')
+        return
+      }
+    }
     const timestamp = Date.now()
     let state: MessageSubmissionState | undefined
     if (this.snapshot.phase === 'plain' && (this.snapshot.draft.trim() !== '' || this.attachmentIds.length > 0)) {
@@ -335,7 +423,12 @@ export class SessionInputShell implements SessionInput {
       this.notify('error', this.deps.commandAttachments.unsupportedNotice(before.claim?.token ?? before.draft))
       return
     }
-    this.dispatchRun({ type: 'enter', mode, draft: this.projection.clipboardText, submission })
+    if (references !== undefined && this.snapshot.phase !== 'plain') {
+      this.referenceFailure('unsupported-route')
+      return
+    }
+    this.dispatchRun({ type: 'enter', mode, draft: references?.clipboardText ?? this.projection.clipboardText, submission,
+      ...references === undefined ? {} : { references } })
     const phase = this.snapshot.phase
     if (phase === 'adjudicating' || phase === 'submitting') {
       this.deps.popup?.()?.dismiss()
@@ -514,6 +607,7 @@ export class SessionInputShell implements SessionInput {
       flight.controller.abort()
     }
     this.disposed = true
+    this.referenceMarks = Object.freeze([])
     this.dispatchRun(({ type: 'release' }))
     this.unsubscribeInbox?.()
     this.unregister()
@@ -616,6 +710,7 @@ export class SessionInputShell implements SessionInput {
         return
       }
       case 'commit-draft': {
+        if (fx.draftRev !== undefined && fx.draftRev !== this.rev) return
         this.commitDraft(fx.retainSuffixOf)
         return
       }
@@ -648,6 +743,7 @@ export class SessionInputShell implements SessionInput {
     draft: string,
     mode: InputSubmitMode,
   ): void {
+    if (attempt.references !== undefined) { this.sinkAsserted(attempt, mode); return }
     this.notifySubmission(attempt.submission)
     const attachmentIds = [...this.attachmentIds]
     this.attachmentIds = []
@@ -691,6 +787,42 @@ export class SessionInputShell implements SessionInput {
         this.settleDetachedFailure(attempt, message)
       },
     )
+  }
+
+  private sinkAsserted(attempt: SubmitAttempt, mode: InputSubmitMode): void {
+    const snapshot = attempt.references
+    if (snapshot === undefined) return
+    const attachmentIds = snapshot.attachmentIds
+    this.attachmentIds = this.attachmentIds.filter(id => !attachmentIds.includes(id))
+    this.detachedDrafts.set(attempt.seq, {
+      draft: snapshot.clipboardText, occurrences: snapshot.occurrences, attachmentIds,
+    })
+    if (this.failedRestoreRev === this.rev) {
+      this.failedDetached.clear()
+      this.failedRestoreRev = undefined
+    }
+    this.notifySubmission(attempt.submission)
+    const signal = attempt.signal
+    const pending = async (): Promise<SubmitOutcome> => {
+      try {
+        const inputTriggers = this.deps.inputTriggers?.()
+        const parts = await waitAssertedSerialization(Promise.all(snapshot.occurrences.map(async (occurrence) => {
+          if (inputTriggers === undefined) throw new Error('serializer-unavailable')
+          return { offset: occurrence.offset, length: occurrence.length,
+            text: await inputTriggers.serializeReference(occurrence.source, occurrence.ref, signal) }
+        })), signal)
+        if (this.dead(attempt) || this.deps.canAssert?.() !== true || this.deps.assertedSink === undefined) {
+          throw new Error('owner-unavailable')
+        }
+        const assertions = serializeReferenceAssertions(snapshot, parts)
+        return await waitAssertedSerialization(this.deps.assertedSink(assertions, attachmentIds, mode, signal), signal)
+      } catch (_error) {
+        // Serialization, transport, and adapter errors expose only localized fixed copy.
+        const text = this.deps.referenceNotice?.('send-failed')
+        return { kind: 'error', ...text === undefined ? {} : { text } }
+      }
+    }
+    this.settleSink(attempt, pending())
   }
 
   private notifySubmission(submission: MessageSubmission | undefined): void {
@@ -839,6 +971,7 @@ export class SessionInputShell implements SessionInput {
   private compose(): InputState {
     const core = this.core.state
     return {
+      referenceMarks: this.referenceMarks,
       draft: this.projection.clipboardText,
       attachmentIds: this.attachmentIds,
       draftRev: this.rev,

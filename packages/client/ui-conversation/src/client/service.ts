@@ -24,7 +24,7 @@ import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {
   ComposerAttachment, ComposerFileAttachment, ComposerImageAttachment, DraftFileUpload,
 } from './contract/slots.ts'
-import type { QueueAction } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { QueueAction, SessionReferenceAssertions } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { ComposerBlocks } from './contract/composer-blocks.ts'
 import type {
@@ -233,6 +233,32 @@ export class ConversationController extends Service implements IConversation {
     mode: InputSubmitMode,
     signal?: AbortSignal,
   ): Promise<SubmitOutcome> {
+    return this.sendSessionAttempt(session, text, attachmentIds, mode, undefined, signal)
+  }
+
+  /**
+   * Send final reference intent through the distinct asserted route.
+   * @param session - ordinary Session target.
+   * @param assertions - immutable final binding.
+   * @param attachmentIds - ordered attachment drafts.
+   * @param mode - delivery intent.
+   * @param signal - cancellation before Host enqueue.
+   * @returns asserted admission settlement without ordinary-prompt fallback.
+   */
+  sendSessionWithReferences(
+    session: SessionFace, assertions: SessionReferenceAssertions, attachmentIds: readonly DraftAttachmentId[],
+    mode: InputSubmitMode, signal?: AbortSignal,
+  ): Promise<SubmitOutcome> {
+    if (session.getSnapshot().subagent !== null || this.blocks.storeFor(session.sessionId).getSnapshot() !== undefined) {
+      return Promise.resolve({ kind: 'error' })
+    }
+    return this.sendSessionAttempt(session, assertions.text, attachmentIds, mode, assertions, signal)
+  }
+
+  private async sendSessionAttempt(
+    session: SessionFace, text: string, attachmentIds: readonly DraftAttachmentId[],
+    mode: InputSubmitMode, assertions?: SessionReferenceAssertions, signal?: AbortSignal,
+  ): Promise<SubmitOutcome> {
     const attachments = this.resolveDraftAttachments(attachmentIds)
     if (attachments.length !== attachmentIds.length) {
       throw new Error('conversation.sendSession: one or more draft attachments are no longer available')
@@ -263,6 +289,7 @@ export class ConversationController extends Service implements IConversation {
     )
     const snapshot = session.getSnapshot()
     if (snapshot.subagent !== null) {
+      if (assertions !== undefined) return { kind: 'error' }
       const uploaded = await serializeAttachments()
       const content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
       const result = await session.prompt(content, mode, signal)
@@ -290,7 +317,13 @@ export class ConversationController extends Service implements IConversation {
       submission.abandon()
       throw error
     }
-    const result = await session.prompt(content, mode, signal, submission.requestId)
+    if (assertions !== undefined && this.blocks.storeFor(session.sessionId).getSnapshot() !== undefined) {
+      submission.abandon()
+      return { kind: 'error' }
+    }
+    const result = assertions === undefined
+      ? await session.prompt(content, mode, signal, submission.requestId)
+      : await session.promptWithReferences(content, mode, assertions, submission.requestId, signal)
     if (!result.ok) return { kind: 'error' }
     if (retirement !== undefined && (await retirement).reason !== 'observed') return { kind: 'error' }
     return { kind: 'success' }

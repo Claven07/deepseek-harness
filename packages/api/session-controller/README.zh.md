@@ -27,6 +27,12 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用本包
 
+`session.promptWithReferences` 与普通 `session.prompt` 分开接收调用方声明的引用意图。公开 DTO 从 `@deepseek-ai/dsh-api-session-controller/types` 导出。请求必须且只能包含一个位于末尾的文本块，`referenceAssertions.text` 与该块一致，并携带一至四个不重叠的 UTF-16 范围。最终文本最多包含 1,200 个代码单元。范围沿用 M6.1 的 ASCII 引用表面与原子字符规则；依赖匹配捕获上下文的歧义端点（包括句点前的端点）会被拒绝。意图不能证明作者身份、符号存在或内容正确，也不允许绕过下游隐私检查。
+
+Host 适配器获取独占的 `ctx.sessionController.leaseReferenceAssertions(consumer)` 租约，并在实时已提交消息回调中同步消费。消费绑定实际的 Session、Agent、请求身份、MessageId、来源关联和最终文本块排列。结果区分缺失、已声明、无效和已消费的意图；无效与已消费结果必须阻止 M6 提取。意图在下游操作之前移除，适配器失败不能重新启用它。释放租约会撤销待处理与接收中的断言。适配器通过 Cordis effect 管理释放操作。
+
+断言提交要求已挂载的普通 Session 和消费者租约。异步接收之前先预留请求身份，相同的并发请求共享结果；冲突或无法确认的历史重试被拒绝。队列编辑即使保持相同文本也撤销意图；移除会终止意图，插话则移动同一批次。取消活动轮次会终止已领取的批次，保留其他排队批次。释放与轮次拒绝会清理相应状态；恢复和 fork 不会恢复断言。断言不进入消息、来源元数据、遥测、错误或持久事件。不受支持的断言路径会明确失败，不会回退到普通提示词路径。
+
 历史页与 follow opening 快照为每个持久 Session 事件携带一条 `{ type: 'event', event: SessionWireEvent }` record。Client 把每条已接受 record 保留为一个持久 `SessionEventLikeEntry`；Assistant token 边界保留在 `assistant/message` 或 `assistant/attempt` 的紧凑流内。工具参数、结果内容、失败信息和 `tool/result.data.meta` 原样通过；控制器不解析工具定义、不运行展示转换器，也不附加 UI 数据。
 
 Client journal 在发布 follow 快照、live entry 或历史页之前验证当前 Session 事件 envelope。它复用浏览器安全的 Session validator，检查必需的 surface marker、精确的 replacement endpoint、更早且唯一的 source seq、内嵌 Assistant 提供方元数据、request header 可选字段的省略规则以及工具错误一致性。无效 record 直接失败，不删除字段或归一化；范围成员与来源存在性仍由 Host 的持久日志检查。
@@ -92,6 +98,7 @@ GUI 模型选择要求确切提供方／模型对出现在可用目录中；不�
 | 字段 | 默认值 | 含义 |
 |---|---:|---|
 | `nativeOpen` | 平台探测 | 是否能把 Session 工作区路径交给原生桌面打开器 |
+| `referenceAssertionCapacity` | `128` | 限定实时断言与保留接收凭据的正安全整数；容量不足时拒绝请求，不驱逐实时意图 |
 
 生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-api-session-controller)是所有受支持字段及其 JSDoc 的完整来源。
 

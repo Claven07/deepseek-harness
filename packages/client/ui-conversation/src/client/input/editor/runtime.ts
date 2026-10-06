@@ -23,7 +23,7 @@ type Lexicon = ReadonlyMap<'/' | '@', readonly string[]>
 
 /** Model callbacks read at the same editor registration and update points. */
 interface DraftEditorRuntimeDeps {
-  readonly onUpdate: () => void
+  readonly onUpdate: (contentMutation: boolean) => void
   readonly openReference: (source: string | undefined, reference: Pick<ReferenceInsert, 'ref' | 'appearance'>) => boolean
   readonly activeClaimToken: () => string | null
   readonly lexicon: () => Lexicon
@@ -86,7 +86,9 @@ export class DraftEditorRuntime {
       registerReferenceActivation(this.editor, (source, reference) =>
         this.deps.openReference(source, reference)),
       registerHistory(this.editor, createEmptyHistoryState(), HISTORY_MERGE_DELAY_MS),
-      this.editor.registerUpdateListener(() => { this.deps.onUpdate() }),
+      this.editor.registerUpdateListener(({ dirtyLeaves, dirtyElements }) => {
+        this.deps.onUpdate(dirtyLeaves.size > 0 || [...dirtyElements.values()].some(Boolean))
+      }),
       registerClaimDecoration(this.editor, () => this.deps.activeClaimToken()),
       registerTextRefDecoration(this.editor, () => this.deps.lexicon(), () => this.deps.activeClaimToken()),
       () => { this.lexiconOff?.() },

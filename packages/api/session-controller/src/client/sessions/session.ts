@@ -17,6 +17,7 @@ import type {
   SessionAssistantStreamBaseline,
   SessionProjectionBaseline,
   SessionRequestId,
+  SessionReferenceAssertions,
 } from '../../types.ts'
 import type {
   BeginSubmissionInput, PendingSubmissionRetirement, SessionFace, SubmissionHandle,
@@ -310,6 +311,52 @@ export class Session implements SessionFace {
       this.blankBit = false
       this.notifier.markDirty()
     }
+    this.options.onEngaged?.(this)
+    return result
+  }
+
+  /**
+   * Submit intent only through the asserted endpoint, with no subagent or ordinary-prompt fallback.
+   * @param content - immutable final content. @param mode - delivery intent.
+   * @param assertions - exact text binding and spans. @param requestId - submission identity.
+   * @param signal - cancellation before Host admission.
+   * @returns asserted admission result, mirrored to promptError on failure.
+   */
+  async promptWithReferences(
+    content: readonly PromptContentPart[], mode: 'queue' | 'steer', assertions: SessionReferenceAssertions,
+    requestId: SessionRequestId, signal?: AbortSignal,
+  ): Promise<RemoteResult<{ accepted: true }>> {
+    const finalContent = Object.freeze(content.map(block => Object.freeze({ ...block })))
+    const referenceAssertions = Object.freeze({ text: assertions.text,
+      referenceSpans: Object.freeze(assertions.referenceSpans.map(span => Object.freeze({ start: span.start, end: span.end }))),
+    })
+    this.promptError = null
+    this.lastAgentError = null
+    this.promptAttempted = true
+    if (this.blankBit) this.firstPromptPendingTurn = true
+    this.notifier.markDirty()
+    const unsupported = (): RemoteResult<{ accepted: true }> => ({ ok: false,
+      error: new RemoteError('session/reference-rejected', 'unsupported-route', {}),
+    })
+    let result: RemoteResult<{ accepted: true }>
+    try {
+      result = this.address !== undefined || typeof this.remote.session.promptWithReferences !== 'function'
+        ? unsupported()
+        : await this.remote.session.promptWithReferences(Object.freeze({
+          requestId, sessionId: this.sessionId, mode, content: finalContent,
+          clientTimeZone: resolvedClientTimeZone(), referenceAssertions,
+        }), signal)
+    } catch (_error) {
+      // Transport failures retire only the local echo and never retry or expose caller data.
+      result = { ok: false, error: new RemoteError('session/reference-rejected', 'transport-failed', {}) }
+    }
+    if (!result.ok) {
+      this.retireFailedSubmission(requestId)
+      this.promptError = { op: 'send', error: result.error }
+      this.notifier.markDirty()
+      return result
+    }
+    if (this.blankBit) { this.blankBit = false; this.notifier.markDirty() }
     this.options.onEngaged?.(this)
     return result
   }

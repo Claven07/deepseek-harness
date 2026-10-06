@@ -44,6 +44,8 @@ target package 通过 declaration merge 扩展 snapshot 与 Location data map，
 <a id="shell-and-standard-props"></a>
 ## Shell 与标准 props
 
+支持键盘操作的“标记为引用”动作捕获选中的普通文本，不修改编辑器，也不插入标记。最多四个不重叠的完整引用表面临时保存在输入 shell 中；移动选择会保留它们，内容变更（包括相同文本的程序化替换）则清除它们。提交先捕获不可变截面，再按位置把检测坐标经过剪贴板 chip 展开、异步序列化与最终裁剪进行映射。断言发送只使用 `session.promptWithReferences`；命令、子代理和被阻止的 composer 会拒绝引用意图。发送失败只恢复内容与附件，不恢复断言，因此重试需要重新标记并使用新的请求身份。必须存在 Host 消费者租约；断言仅表达意图，不能绕过下游隐私检查。
+
 共享图片插槽属性将展示选择与持久化引用分开：`thumbnail` 请求完整缩放的附件列表缩略图，`compact` 请求裁剪的图片方块。每张图片可通过可选的 `label` 提供无障碍展示名称；加载和缓存标识仍使用原始附件引用。[ui-attachment](../ui-attachment/README.zh.md) 负责渲染与灯箱。
 
 控件组的尺寸、内容、可见性或字体加载状态变化后，composer 测量展开状态下的控件组。若无法排在同一行，控制栏为模型位设置 `--dsh-composer-model-text-display: none` 和 `--dsh-composer-model-icon-display: block`；两者默认值分别为 `block` 和 `none`。若连图标也放不下，仍允许换行。

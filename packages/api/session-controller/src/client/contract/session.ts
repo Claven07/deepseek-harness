@@ -12,7 +12,7 @@ import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
-import type { PromptContentPart, QueueAction, SessionRequestId } from '../../types.ts'
+import type { PromptContentPart, QueueAction, SessionRequestId, SessionReferenceAssertions } from '../../types.ts'
 import type { PendingSubmissionAttachment, SessionSnapshot } from './snapshot.ts'
 
 /**
@@ -89,6 +89,22 @@ export interface ISession {
     mode: 'queue' | 'steer',
     signal?: AbortSignal,
     requestId?: SessionRequestId,
+  ): Promise<RemoteResult<{ accepted: true }>>
+  /**
+   * Submit explicit intent through the asserted Remote route; unsupported routes fail closed.
+   * @param content - exactly one final text block, preceded only by attachments.
+   * @param mode - queue or steer delivery.
+   * @param assertions - immutable intent bound to the final text.
+   * @param requestId - immutable submission identity.
+   * @param signal - cancellation before Host enqueue.
+   * @returns acceptance or a fixed admission error; never retries through ordinary prompt.
+   */
+  promptWithReferences(
+    content: readonly PromptContentPart[],
+    mode: 'queue' | 'steer',
+    assertions: SessionReferenceAssertions,
+    requestId: SessionRequestId,
+    signal?: AbortSignal,
   ): Promise<RemoteResult<{ accepted: true }>>
   /**
    * Resolve one durable image referenced by this session.

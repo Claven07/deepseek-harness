@@ -2000,6 +2000,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'acknowledgement that the Agent accepted the prompt.',
       },
       {
+        signature: '@Remote(\'promptWithReferences\') promptWithReferences(request: SessionPromptWithReferencesRequest, signal: AbortSignal): Promise<SessionPromptValue>',
+        description: 'Admit explicit reference intent through a distinct, fail-closed Remote route.',
+        parameters: [{ name: 'request', description: 'immutable final text, spans, attachments, and request identity.' }, { name: 'signal', description: 'cancellation before Inbox insertion; does not withdraw accepted work.' }],
+        returns: 'acknowledgement of the single asserted admission.',
+      },
+      {
+        signature: 'leaseReferenceAssertions(consumer: ReferenceAssertionConsumer): Disposable',
+        description: 'Lease the Host-only synchronous reference consumer; never exposed through Remote.',
+        parameters: [{ name: 'consumer', description: 'adapter callback for live committed user messages.' }],
+        returns: 'the exclusive consumer lease, whose disposal revokes transient intent.',
+      },
+      {
         signature: '@Remote(\'attachment\') attachment(request: SessionAttachmentRequest): Promise<SessionAttachmentValue>',
         description: 'Read one image proven reachable from the addressed Session log.',
         parameters: [{ name: 'request', description: 'Session and attachment identities used for authorization.' }],
@@ -3387,6 +3399,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Register the sole application-selected forwarded-event source.',
         parameters: [{ name: 'source', description: 'stream factory installed by the Remote assembly.' }, { name: 'host', description: 'stable Host facts included in each Client generation\'s opening frame.' }],
         returns: 'disposer removing this source and cancelling its active streams.',
+      },
+      {
+        signature: 'registerAssertedRequestPreflight(preflight: (request: unknown) => void): () => void',
+        description: 'Register the Session Controller\'s bounded preflight for asserted prompts.',
+        parameters: [{ name: 'preflight', description: 'non-copying validation of the raw asserted request.' }],
+        returns: 'a disposer that removes this exact registration.',
       },
       {
         signature: 'async invoke(request: InvokeRemoteRequest): Promise<unknown>',
@@ -4854,6 +4872,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ConnectionTrustRequest {\n    readonly headers: Headers | Readonly<Record<string, string | readonly string[] | undefined>>;\n}',
   },
   {
+    name: 'ConsumeReferenceAssertions',
+    declaration: 'export type ConsumeReferenceAssertions = (session: Session, agent: Agent, message: UserMessage, requestId: SessionRequestId) => ReferenceAssertionConsumption;',
+  },
+  {
     name: 'ContentBlockMap',
     declaration: 'export interface ContentBlockMap {\n    \'text\': TextBlock;\n    \'reasoning\': ReasoningBlock;\n    \'image\': ImageBlock;\n    \'file\': FileBlock;\n    \'tool-call\': ToolCallBlock;\n    \'tool-addition\': ToolAdditionBlock;\n    \'tool-removal\': ToolRemovalBlock;\n}',
   },
@@ -6170,6 +6192,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface RedactedSecret {\n    path: string[];\n    set: boolean;\n}',
   },
   {
+    name: 'ReferenceAssertionConsumer',
+    declaration: 'export type ReferenceAssertionConsumer = (session: Session, agent: Agent, event: SessionEvent<\'user/message\'>, consume: ConsumeReferenceAssertions) => void;',
+  },
+  {
+    name: 'ReferenceAssertionConsumption',
+    declaration: 'export type ReferenceAssertionConsumption = {\n    readonly kind: \'absent\' | \'invalid\' | \'already-consumed\';\n} | {\n    readonly kind: \'asserted\';\n    readonly assertions: SessionReferenceAssertions;\n};',
+  },
+  {
     name: 'Registry',
     declaration: 'export type Registry = string | null;',
   },
@@ -6778,8 +6808,16 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionPromptValue {\n    readonly accepted: true;\n}',
   },
   {
+    name: 'SessionPromptWithReferencesRequest',
+    declaration: 'export interface SessionPromptWithReferencesRequest extends SessionPromptRequest {\n    readonly referenceAssertions: SessionReferenceAssertions;\n}',
+  },
+  {
     name: 'SessionRecord',
     declaration: 'export interface SessionRecord {\n    header: SessionHeader;\n    live: boolean;\n    persisted: boolean;\n}',
+  },
+  {
+    name: 'SessionReferenceAssertions',
+    declaration: 'export interface SessionReferenceAssertions {\n    readonly text: string;\n    readonly referenceSpans: readonly SessionReferenceSpan[];\n}',
   },
   {
     name: 'SessionReferenceCandidate',
@@ -6792,6 +6830,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionReferenceMentionCandidate',
     declaration: 'export interface SessionReferenceMentionCandidate extends SessionReferenceCandidate {\n    mention: string;\n}',
+  },
+  {
+    name: 'SessionReferenceSpan',
+    declaration: 'export interface SessionReferenceSpan {\n    readonly start: number;\n    readonly end: number;\n}',
   },
   {
     name: 'SessionRenameRequest',

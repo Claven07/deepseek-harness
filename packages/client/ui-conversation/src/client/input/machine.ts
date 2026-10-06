@@ -9,6 +9,7 @@
  */
 import type { InputSubmitMode, MessageSubmission } from '../contract/composer-submission.ts'
 import type { CommandClaim, InputEffect, InputEvent, InputState, SubmitAttempt } from '../contract/input.ts'
+import type { ReferenceDraftSnapshot } from './reference-serialization.ts'
 
 /** Exhaustiveness backstop for the closed InputEvent union. */
 function unreachable(value: never): never {
@@ -77,7 +78,7 @@ export class SubmitMachine {
     switch (ev.type) {
       case 'draft-changed': return this.onDraftChanged(ev.draft)
       case 'claim': return this.onClaim(ev.claim)
-      case 'enter': return this.onEnter(ev.mode, ev.draft, ev.submission)
+      case 'enter': return this.onEnter(ev.mode, ev.draft, ev.submission, ev.references)
       case 'adjudicated': return this.onAdjudicated(ev.attempt, ev.outcome)
       case 'adjudication-failed': return this.onAdjudicationFailed(ev.attempt, ev.message)
       case 'submit-settled': return this.onSubmitSettled(ev)
@@ -106,14 +107,21 @@ export class SubmitMachine {
   }
 
   /** Mint an attempt and controller without assigning its lifecycle owner. */
-  private mintAttempt(mode: InputSubmitMode, draft: string, submission?: MessageSubmission): {
+  private mintAttempt(mode: InputSubmitMode, draft: string, submission?: MessageSubmission, references?: ReferenceDraftSnapshot): {
     readonly attempt: SubmitAttempt
     readonly controller: AbortController
   } {
     const controller = new AbortController()
     this.seq += 1
     return {
-      attempt: { seq: this.seq, signal: controller.signal, draftSnapshot: draft, mode, ...submission === undefined ? {} : { submission } },
+      attempt: {
+        seq: this.seq,
+        signal: controller.signal,
+        draftSnapshot: draft,
+        mode,
+        ...submission === undefined ? {} : { submission },
+        ...references === undefined ? {} : { references },
+      },
       controller,
     }
   }
@@ -126,8 +134,13 @@ export class SubmitMachine {
   }
 
   /** Mint an ordinary send that leaves the phase plain. */
-  private beginDetached(mode: InputSubmitMode, draft: string, submission?: MessageSubmission): SubmitAttempt {
-    const flight = this.mintAttempt(mode, draft, submission)
+  private beginDetached(
+    mode: InputSubmitMode,
+    draft: string,
+    submission?: MessageSubmission,
+    references?: ReferenceDraftSnapshot,
+  ): SubmitAttempt {
+    const flight = this.mintAttempt(mode, draft, submission, references)
     this.detached.set(flight.attempt.seq, flight.controller)
     this.claim = undefined
     this.phase = 'plain'
@@ -136,13 +149,19 @@ export class SubmitMachine {
 
   /** Default-send effects capture the sink input before the editor commit. */
   private detachedEffects(attempt: SubmitAttempt): readonly InputEffect[] {
+    const draftRev = attempt.references?.marks[0]?.draftRev
     return [
       { type: 'default-sink', attempt, draft: attempt.draftSnapshot, mode: attempt.mode },
-      { type: 'commit-draft', retainSuffixOf: attempt.draftSnapshot },
+      { type: 'commit-draft', retainSuffixOf: attempt.draftSnapshot, ...draftRev === undefined ? {} : { draftRev } },
     ]
   }
 
-  private onEnter(mode: InputSubmitMode, draft: string, submission?: MessageSubmission): readonly InputEffect[] {
+  private onEnter(
+    mode: InputSubmitMode,
+    draft: string,
+    submission?: MessageSubmission,
+    references?: ReferenceDraftSnapshot,
+  ): readonly InputEffect[] {
     if (this.phase === 'adjudicating' || this.phase === 'submitting') return []
     if (this.phase === 'claimed' && this.claim !== undefined) {
       const attempt = this.beginAttempt(mode, draft, submission)
@@ -156,7 +175,7 @@ export class SubmitMachine {
       this.phase = 'adjudicating'
       return [{ type: 'adjudicate', attempt, draft }]
     }
-    return this.detachedEffects(this.beginDetached(mode, draft, submission))
+    return this.detachedEffects(this.beginDetached(mode, draft, submission, references))
   }
 
   private onAdjudicated(

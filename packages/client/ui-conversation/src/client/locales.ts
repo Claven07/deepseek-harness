@@ -9,6 +9,9 @@ const PLAN_NEXT_ACTION_EN = 'describe your task to generate plan'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
+  'reference.mark': '标记为引用',
+  'reference.invalid': '请选择完整的普通文本，最多标记四处不重叠的引用。',
+  'reference.sendFailed': '引用消息发送失败。请重新标记后重试。',
   'shortcut.newline': '换行',
   'shortcut.complementary': '使用互补的 Queue／Steer 方式',
   'shortcut.slash': '打开命令菜单',
@@ -385,6 +388,9 @@ export type ConversationKey = keyof typeof zh
 
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
+  'reference.mark': 'Mark as reference',
+  'reference.invalid': 'Select complete ordinary text. Mark up to four non-overlapping references.',
+  'reference.sendFailed': 'Reference message failed to send. Mark the text again before retrying.',
   'shortcut.newline': 'New line',
   'shortcut.complementary': 'Use the complementary Queue / Steer action',
   'shortcut.slash': 'Open command menu',

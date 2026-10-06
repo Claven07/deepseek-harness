@@ -13,7 +13,7 @@ import type { InboxState } from '@deepseek-ai/dsh-agent/types'
 import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
-import { $getRoot, $isTextNode } from 'lexical'
+import { $getRoot, $isTextNode, $setSelection } from 'lexical'
 import {
   bindSnapshotSelector, conversationSnapshot as conversationFixture, makeTranslate, RemoteError,
   sessionSnapshot as sessionFixture,
@@ -39,6 +39,57 @@ import { en, zh } from '../src/client/locales.ts'
 const useResource = (() => ({ status: 'none' as const, value: undefined, failure: undefined })) as GlobalStandardProps['useResource']
 
 afterEach(cleanup)
+
+it('marks the retained editor selection after the action receives keyboard focus', () => {
+  const { view, shell } = bench({ draft: 'Use Alpha instead of Beta' })
+  act(() => { shell.editor.update(() => { $selectDetectSpan({ start: 4, end: 9 }) }, { discrete: true }) })
+  const action = view.getByRole('button', { name: zh['reference.mark'] })
+  const text = shell.snapshot.draft
+  act(() => { action.focus() })
+  act(() => { shell.editor.update(() => { $setSelection(null) }, { discrete: true }) })
+  expect(action.tagName).toBe('BUTTON')
+  expect(action.tabIndex).toBe(0)
+  expect(document.activeElement).toBe(action)
+  fireEvent.click(action, { detail: 0 })
+  expect(shell.snapshot.referenceMarks).toEqual([{ start: 4, end: 9, draftRev: shell.snapshot.draftRev }])
+  expect(shell.snapshot.draft).toBe(text)
+})
+
+it('rejects the captured selection when the draft revision changes while the reference action has focus', () => {
+  const { view, shell } = bench({ draft: 'Use Alpha instead of Beta' })
+  act(() => { shell.editor.update(() => { $selectDetectSpan({ start: 4, end: 9 }) }, { discrete: true }) })
+  const action = view.getByRole('button', { name: zh['reference.mark'] })
+  act(() => { action.focus(); shell.setDraft(shell.snapshot.draft) })
+  fireEvent.click(action, { detail: 0 })
+  expect(shell.snapshot.referenceMarks).toEqual([])
+  expect(shell.notices.getSnapshot()?.text).toBe(en['reference.invalid'])
+})
+
+it('invalidates a retained selection after the editor draft mutates', () => {
+  const { view, shell } = bench({ draft: 'Use Alpha instead of Beta' })
+  act(() => { shell.editor.update(() => { $selectDetectSpan({ start: 4, end: 9 }) }, { discrete: true }) })
+  const action = view.getByRole('button', { name: zh['reference.mark'] })
+  act(() => { action.focus() })
+  act(() => { shell.setDraft('Use Gamma instead of Beta') })
+
+  fireEvent.click(action, { detail: 0 })
+
+  expect(shell.snapshot.referenceMarks).toEqual([])
+  expect(shell.snapshot.draft).toBe('Use Gamma instead of Beta')
+  expect(shell.notices.getSnapshot()?.text).toBe(en['reference.invalid'])
+})
+
+it('supports mouse activation through the existing focus-preserving press path', () => {
+  const { view, shell, textarea } = bench({ draft: 'Use Alpha instead of Beta' })
+  act(() => { shell.editor.update(() => { $selectDetectSpan({ start: 4, end: 9 }) }, { discrete: true }) })
+  const action = view.getByRole('button', { name: zh['reference.mark'] })
+
+  fireEvent.mouseDown(action)
+  fireEvent.click(action, { detail: 1 })
+
+  expect(document.activeElement).toBe(textarea)
+  expect(shell.snapshot.referenceMarks).toEqual([{ start: 4, end: 9, draftRev: shell.snapshot.draftRev }])
+})
 
 // jsdom implements no Range geometry at all — `Range.prototype.getBoundingClientRect`
 // is absent — and the composer measures the caret with one when it restores the
@@ -133,6 +184,9 @@ function bench(over?: BenchOptions) {
   const shell = new SessionInputShell({
     actx: SCTX,
     defaultSink: sink,
+    canAssert: () => over?.subagent === undefined && over?.blocked === undefined,
+    assertedSink: async () => ({ kind: 'success' }),
+    referenceNotice: () => en['reference.invalid'],
     commandAttachments: { serialize: () => Promise.resolve([]), release: () => {}, unsupportedNotice: (token: string) => `${token.trim()} attachments-unsupported` },
     inbox: createSnapshotStore<InboxState>({
       'next-turn': over?.queue ?? [],

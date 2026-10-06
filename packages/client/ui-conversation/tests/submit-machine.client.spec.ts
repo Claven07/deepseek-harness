@@ -9,7 +9,22 @@ import { describe, expect, it } from 'vitest'
 import type { CommandClaim } from '../src/client/contract/input.ts'
 import type { InputEffect, SubmitAttempt } from '../src/client/contract/input.ts'
 import { SubmitMachine } from '../src/client/input/machine.ts'
+import type { ReferenceDraftSnapshot } from '../src/client/input/reference-serialization.ts'
 import { scanTextRefs } from '../src/client/input/decorations.ts'
+
+it('guards asserted draft clearing by the captured revision without changing ordinary clearing', () => {
+  const references: ReferenceDraftSnapshot = Object.freeze({
+    detectText: 'Alpha', clipboardText: 'Alpha', segments: Object.freeze([]),
+    marks: Object.freeze([{ start: 0, end: 5, draftRev: 7 }]),
+    occurrences: Object.freeze([]), attachmentIds: Object.freeze([]),
+  })
+  const asserted = new SubmitMachine().dispatch({ type: 'enter', mode: 'queue', draft: 'Alpha', references })
+  expect(asserted.find(effect => effect.type === 'commit-draft')).toEqual({
+    type: 'commit-draft', retainSuffixOf: 'Alpha', draftRev: 7,
+  })
+  const ordinary = new SubmitMachine().dispatch({ type: 'enter', mode: 'queue', draft: 'Alpha' })
+  expect(ordinary.find(effect => effect.type === 'commit-draft')).toEqual({ type: 'commit-draft', retainSuffixOf: 'Alpha' })
+})
 
 function claimOf(name: string, hint?: string): CommandClaim {
   return {

@@ -53,6 +53,7 @@ import type {
   SessionPage,
   SessionPageRequest,
   SessionPromptRequest,
+  SessionPromptWithReferencesRequest,
   SessionPromptValue,
   SessionRenameRequest,
   SessionRenameValue,
@@ -67,6 +68,7 @@ import type {
 
 /** Direct test face matching the generated `ctx.remote.session` unary methods. */
 export interface TestSessionRemote {
+  promptWithReferences(request: SessionPromptWithReferencesRequest, signal?: AbortSignal): Promise<RemoteResult<SessionPromptValue>>
   workspacePathApplications(
     request: { readonly path: string }, signal?: AbortSignal,
   ): Promise<RemoteResult<readonly SessionWorkspacePathApplication[]>>
@@ -367,6 +369,9 @@ export function createSessionTestRemote(
     prompt: (request, signal = new AbortController().signal) => remoteResult(
       () => direct.prompt(request, signal),
       signal,
+    ),
+    promptWithReferences: (request, signal = new AbortController().signal) => remoteResult(
+      () => direct.promptWithReferences(request, signal), signal,
     ),
     attachment: request => remoteResult(() => direct.attachment(request)),
     updateQueue: request => remoteResult(() => direct.updateQueue(request)),

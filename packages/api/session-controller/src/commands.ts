@@ -7,7 +7,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import type { Agent, ModelSelection as AgentModelSelection } from '@deepseek-ai/dsh-agent'
 import { AttachmentError } from '@deepseek-ai/dsh-attachment'
 import type {
-  AttachmentAdmissionPart, FileAttachmentRef, ImageAttachmentRef,
+  AttachmentAdmissionPart, FileAttachmentRef, ImageAttachmentLimits, ImageAttachmentRef,
 } from '@deepseek-ai/dsh-attachment'
 import type { FileUploadReceiptId } from '@deepseek-ai/dsh-client-file-upload/types'
 import type {} from '@deepseek-ai/dsh-client-file-upload'
@@ -21,7 +21,9 @@ import type { SessionEvent, SessionHeader, SessionId, UserMessage } from '@deeps
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
 import { canonicalClientTimeZone } from '@deepseek-ai/dsh-util-time'
-import { assertNever } from '@deepseek-ai/dsh-util-values'
+import { assertNever, deepFreeze } from '@deepseek-ai/dsh-util-values'
+import { ReferenceAssertionRegistry, finalText, referenceAdmissionError } from './reference-assertions.ts'
+import { validateReferenceSpans } from './reference-validation.ts'
 import { RemoteError, remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
 import {
@@ -44,6 +46,7 @@ import type {
   SessionForkRequest,
   SessionForkValue,
   SessionPromptRequest,
+  SessionPromptWithReferencesRequest,
   SessionPromptValue,
   SessionRenameRequest,
   SessionRenameValue,
@@ -68,6 +71,177 @@ function hasPromptContent(content: readonly PromptContentCandidate[]): boolean {
   return content.some(part => part.type !== 'text' || part.text.trim().length > 0)
 }
 
+/** Reject malformed or over-limit asserted requests without copying or traversing unknown fields.
+ * @param input - raw asserted request value from the Gateway parameter boundary.
+ * @param limits - active image and attachment limits owned by the Session Controller.
+ * @returns nothing when the known request fields fit the bounded admission checks.
+ */
+export function preflightAssertedRequest(input: unknown, limits: ImageAttachmentLimits): void {
+  try {
+    const request = assertedRecord(input, 'attachment-invalid')
+    const rawContent = assertedArray(assertedField(request, 'content', 'attachment-invalid'), 1, limits.maxImagesPerMessage + 1, 'attachment-invalid')
+    const rawAssertions = assertedRecord(assertedField(request, 'referenceAssertions', 'text-binding'), 'text-binding')
+    const text = assertedField(rawAssertions, 'text', 'text-binding')
+    if (typeof text !== 'string') throw referenceAdmissionError('text-binding')
+    if (text.length > 1_200) throw referenceAdmissionError('limit')
+    const rawSpans = assertedArray(assertedField(rawAssertions, 'referenceSpans', 'count'), 1, 4, 'count')
+    validateRawReferenceSpanStructure(rawSpans.items, rawSpans.length)
+
+    let textCount = 0
+    let finalTextValue: string | undefined
+    let imageCount = 0
+    let attachmentCount = 0
+    let totalImageBytes = 0
+    for (let index = 0; index < rawContent.length; index += 1) {
+      const part = assertedRecord(assertedArrayItem(rawContent.items, index, 'attachment-invalid'), 'attachment-invalid')
+      const type = assertedField(part, 'type', 'attachment-invalid')
+      if (type === 'text') {
+        const value = assertedField(part, 'text', 'text-binding')
+        if (typeof value !== 'string') throw referenceAdmissionError('text-binding')
+        if (value.length > 1_200) throw referenceAdmissionError('limit')
+        textCount += 1
+        if (index === rawContent.length - 1) finalTextValue = value
+        continue
+      }
+      if (type === 'image') {
+        imageCount += 1
+        attachmentCount += 1
+        if (imageCount > limits.maxImagesPerMessage || attachmentCount > limits.maxImagesPerMessage) {
+          throw referenceAdmissionError('attachment-invalid')
+        }
+        const mediaType = assertedField(part, 'mediaType', 'attachment-invalid')
+        if (mediaType !== 'image/png' && mediaType !== 'image/jpeg'
+          && mediaType !== 'image/webp' && mediaType !== 'image/gif') {
+          throw referenceAdmissionError('attachment-invalid')
+        }
+        if (!limits.mediaTypes.includes(mediaType)) throw referenceAdmissionError('attachment-invalid')
+        const data = assertedField(part, 'data', 'attachment-invalid')
+        if (typeof data !== 'string' || data.length % 4 !== 0) throw referenceAdmissionError('attachment-invalid')
+        const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0
+        const decodedBytes = (data.length / 4) * 3 - padding
+        if (decodedBytes > limits.maxImageBytes) throw referenceAdmissionError('attachment-invalid')
+        totalImageBytes += decodedBytes
+        if (totalImageBytes > limits.maxMessageImageBytes) throw referenceAdmissionError('attachment-invalid')
+        const name = assertedField(part, 'name', 'attachment-invalid')
+        if (name !== undefined && (typeof name !== 'string' || name.length > 255)) {
+          throw referenceAdmissionError('attachment-invalid')
+        }
+        continue
+      }
+      if (type === 'file') {
+        attachmentCount += 1
+        const receiptId = assertedField(part, 'receiptId', 'attachment-invalid')
+        if (attachmentCount > limits.maxImagesPerMessage
+          || typeof receiptId !== 'string' || receiptId.length > 36) {
+          throw referenceAdmissionError('attachment-invalid')
+        }
+        continue
+      }
+      throw referenceAdmissionError('attachment-invalid')
+    }
+    if (textCount !== 1 || finalTextValue === undefined || finalTextValue.length !== text.length || finalTextValue !== text) {
+      throw referenceAdmissionError('text-binding')
+    }
+
+    if (typeof assertedField(request, 'requestId', 'attachment-invalid') !== 'string'
+      || typeof assertedField(request, 'sessionId', 'attachment-invalid') !== 'string') {
+      throw referenceAdmissionError('attachment-invalid')
+    }
+    const mode = assertedField(request, 'mode', 'attachment-invalid')
+    if (mode !== 'queue' && mode !== 'steer') throw referenceAdmissionError('attachment-invalid')
+    const clientTimeZone = assertedField(request, 'clientTimeZone', 'time-zone')
+    if (clientTimeZone !== undefined && typeof clientTimeZone !== 'string') throw referenceAdmissionError('time-zone')
+  } catch (error) {
+    if (remoteErrorOf(error)?.code === 'session/reference-rejected') throw error
+    throw referenceAdmissionError('attachment-invalid')
+  }
+}
+
+/** Check only the bounded span DTO fields; semantic span validation remains controller-owned. */
+function validateRawReferenceSpanStructure(spans: readonly unknown[], spanCount: number): void {
+  for (let index = 0; index < spanCount; index += 1) {
+    const span = assertedRecord(assertedArrayItem(spans, index, 'range'), 'range')
+    const start = assertedField(span, 'start', 'range')
+    const end = assertedField(span, 'end', 'range')
+    if (typeof start !== 'number' || typeof end !== 'number') throw referenceAdmissionError('range')
+  }
+}
+
+function assertedRecord(value: unknown, category: 'attachment-invalid' | 'text-binding' | 'range'): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw referenceAdmissionError(category)
+  const prototype = Object.getPrototypeOf(value) as object | null
+  if (prototype !== null && prototype !== Object.prototype) throw referenceAdmissionError(category)
+  return value as Record<string, unknown>
+}
+
+function assertedArray(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  category: 'attachment-invalid' | 'count',
+): { readonly items: readonly unknown[]; readonly length: number } {
+  if (!Array.isArray(value)) throw referenceAdmissionError(category)
+  const descriptor = Object.getOwnPropertyDescriptor(value, 'length')
+  if (descriptor === undefined || !('value' in descriptor) || typeof descriptor.value !== 'number'
+    || !Number.isSafeInteger(descriptor.value) || descriptor.value < minimum || descriptor.value > maximum) {
+    throw referenceAdmissionError(category)
+  }
+  return { items: value, length: descriptor.value }
+}
+
+function assertedArrayItem(
+  value: readonly unknown[],
+  index: number,
+  category: 'attachment-invalid' | 'count' | 'range',
+): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+  if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
+    throw referenceAdmissionError(category)
+  }
+  return descriptor.value
+}
+
+function assertedField(
+  value: Record<string, unknown>,
+  key: string,
+  category: 'attachment-invalid' | 'count' | 'text-binding' | 'range' | 'time-zone',
+): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key)
+  if (descriptor === undefined) return undefined
+  if (!descriptor.enumerable || !('value' in descriptor)) throw referenceAdmissionError(category)
+  return descriptor.value
+}
+
+/** Copy only validated asserted fields into the immutable controller snapshot. */
+function snapshotAssertedRequest(
+  input: SessionPromptWithReferencesRequest,
+  limits: ImageAttachmentLimits,
+): SessionPromptWithReferencesRequest {
+  preflightAssertedRequest(input, limits)
+  const text = input.referenceAssertions.text
+  const spans: { start: number; end: number }[] = []
+  for (const span of input.referenceAssertions.referenceSpans) spans.push({ start: span.start, end: span.end })
+  const invalid = validateReferenceSpans(text, spans)
+  if (invalid !== undefined) throw referenceAdmissionError(invalid)
+  const content: SessionPromptWithReferencesRequest['content'][number][] = []
+  for (const part of input.content) {
+    if (part.type === 'text') content.push({ type: 'text', text: part.text })
+    else if (part.type === 'image') content.push({
+      type: 'image', mediaType: part.mediaType, data: part.data,
+      ...(part.name === undefined ? {} : { name: part.name }),
+    })
+    else content.push({ type: 'file', receiptId: part.receiptId })
+  }
+  return deepFreeze({
+    requestId: input.requestId,
+    sessionId: input.sessionId,
+    mode: input.mode,
+    content,
+    ...(input.clientTimeZone === undefined ? {} : { clientTimeZone: input.clientTimeZone }),
+    referenceAssertions: { text, referenceSpans: spans },
+  })
+}
+
 /**
  * Resolve the omitted-`atSeq` default to the latest completed-turn prefix,
  * including standalone events before the next turn begins.
@@ -90,11 +264,13 @@ export class SessionCommandController {
    * @param ctx - Host context carrying Agent, model, attachment, title, and Workspace services.
    * @param agents - sole owner of create, resume, and Session-local model selection.
    * @param defaultCwd - project directory used when create names neither a Workspace nor a cwd.
+   * @param referenceAssertions - transient asserted admission owner when this controller is Host-owned.
    */
   constructor(
     private readonly ctx: Context,
     private readonly agents: ApiSessionAgentController,
     private readonly defaultCwd: string,
+    private readonly referenceAssertions?: ReferenceAssertionRegistry,
   ) {}
 
   /**
@@ -384,6 +560,77 @@ export class SessionCommandController {
   }
 
   /**
+   * Reserve intent before async admission, then stage it before synchronous Inbox callbacks.
+   * @param input - final asserted request; no assertion-bearing object reaches message construction.
+   * @param signal - caller cancellation before enqueue.
+   * @returns one shared receipt for identical concurrent requests.
+   */
+  promptWithReferences(input: SessionPromptWithReferencesRequest, signal: AbortSignal): Promise<SessionPromptValue> {
+    if (signal.aborted) throw referenceAdmissionError('canceled')
+    let request: SessionPromptWithReferencesRequest
+    try {
+      request = snapshotAssertedRequest(input, this.ctx.attachments.imageLimits)
+    } catch (error) {
+      if (remoteErrorOf(error)?.code === 'session/reference-rejected') throw error
+      throw referenceAdmissionError('attachment-invalid')
+    }
+    const text = finalText(request.content)
+    if (text === undefined || text !== request.referenceAssertions.text) throw referenceAdmissionError('text-binding')
+    const clientTimeZone = request.clientTimeZone === undefined ? undefined : canonicalClientTimeZone(request.clientTimeZone)
+    if (request.clientTimeZone !== undefined && clientTimeZone === undefined) throw referenceAdmissionError('time-zone')
+    const session = this.ctx.sessions.get(request.sessionId)
+    const registry = this.referenceAssertions
+    if (session === undefined || registry === undefined) throw referenceAdmissionError('owner-unavailable')
+    return registry.reserve(session, request, async (admissionSignal) => {
+      const agent = await waitReferenceAdmission(this.resolveAgent(request.sessionId), admissionSignal)
+      if (agent.session !== session || hasApiSessionSubagentOwner(this.ctx, session, agent)) {
+        throw referenceAdmissionError('unsupported-route')
+      }
+      const checkAcceptance = async (): Promise<void> => {
+        using observation = await this.ctx.sessionQuery.observeSession(session.id, { projectionMode: 'none', signal: admissionSignal })
+        if (admissionSignal.aborted) throw referenceAdmissionError('canceled')
+        if (observation.source !== 'live' || this.ctx.sessions.get(session.id) !== session
+          || this.ctx.agents.get(agent.id) !== agent) throw referenceAdmissionError('owner-unavailable')
+        const matches = (message: UserMessage): boolean => message.source.kind === 'user'
+          && 'rpcId' in message.source && message.source.rpcId === request.requestId
+        if (agent.inbox.nextTurn.some(matches) || agent.inbox.nextStep.some(matches)
+          || observation.events.some(event => event.type === 'user/message' ? matches(event.data)
+            : event.type === 'agent/inbox/spliced' && event.data.inserted.some(matches))) {
+          // A historical acceptance proves that another assertion batch must not be staged;
+          // it does not prove equality of transient assertions lost on restore or eviction.
+          throw referenceAdmissionError('identity-history')
+        }
+      }
+      await checkAcceptance()
+      const hasImage = request.content.some(part => part.type === 'image')
+      const admit = async (): Promise<SessionPromptValue> => {
+        if (hasImage) {
+          const current = this.agents.selectionFor(agent).current
+          const model = await waitReferenceAdmission(this.ctx.llm.resolveModelInfo(current.provider, current.model), admissionSignal)
+          if (model.inputModalities !== undefined && !model.inputModalities.includes('image')) {
+            throw referenceAdmissionError('attachment-invalid')
+          }
+        }
+        const admission = resolvePromptFileReceipts(request.content, receiptId => this.ctx.fileUploads.resolve(agent, receiptId))
+        const content = await waitReferenceAdmission(this.ctx.attachments.admitPromptContent(admission.content), admissionSignal)
+        if (finalText(content) !== text) throw referenceAdmissionError('text-binding')
+        const message = createUserMessage({ content, source: {
+          kind: 'user', rpcId: request.requestId, ...(clientTimeZone === undefined ? {} : { clientTimeZone }),
+        } })
+        await checkAcceptance()
+        if (admissionSignal.aborted) throw referenceAdmissionError('canceled')
+        using binding = this.ctx.fileUploads.bindPrompt(agent, admission.receiptIds, request.requestId)
+        registry.stage(session, agent, request, message)
+        if (request.mode === 'steer') agent.steer(message)
+        else agent.followup(message)
+        binding.commit()
+        return { accepted: true }
+      }
+      return hasImage ? this.agents.serializeReferenceImageAdmission(agent, admit, admissionSignal) : admit()
+    }, signal)
+  }
+
+  /**
    * Read one durable image after proving the Session log references it.
    * @param request - Session and attachment identities used for authorization.
    * @returns the durable attachment reference and base64-encoded bytes.
@@ -479,12 +726,14 @@ export class SessionCommandController {
     }
     switch (request.action.kind) {
       case 'edit':
+        this.referenceAssertions?.revoke(agent, message)
         agent.inbox.replace(request.itemId, freezeMessage<UserMessage>({
           ...message,
           content: [...request.action.content],
         }))
         break
       case 'remove': {
+        this.referenceAssertions?.revoke(agent, message)
         agent.inbox.remove(request.itemId)
         const source = message.source
         if (source.kind === 'user' && 'rpcId' in source) {
@@ -493,8 +742,13 @@ export class SessionCommandController {
         break
       }
       case 'steer':
-        agent.inbox.remove(request.itemId)
-        agent.steer(message)
+        if (this.referenceAssertions === undefined) {
+          agent.inbox.remove(request.itemId)
+          agent.steer(message)
+        } else this.referenceAssertions.move(agent, message, () => {
+          agent.inbox.remove(request.itemId)
+          agent.steer(message)
+        })
         break
       /* v8 ignore next 2 -- closed-union exhaustiveness guard */
       default:
@@ -520,6 +774,7 @@ export class SessionCommandController {
     if (hasApiSessionSubagentOwner(this.ctx, agent.session, agent)) {
       throw apiSessionSubagentOwnershipError(request.sessionId)
     }
+    this.referenceAssertions?.cancelActive(agent)
     agent.cancel({ kind: 'user' }, { keepInbox: true })
     return { accepted: true }
   }
@@ -610,6 +865,22 @@ function hasPromptRequest(agent: Agent, requestId: SessionRequestId): boolean {
     if (event.type !== 'user/message') return false
     const source = event.data.source
     return source.kind === 'user' && 'rpcId' in source && source.rpcId === requestId
+  })
+}
+
+/** Release the asserted attempt while non-cancellable attachment/model work settles independently. */
+function waitReferenceAdmission<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const aborted = (): void => { reject(referenceAdmissionError('canceled')) }
+    if (signal.aborted) aborted()
+    else signal.addEventListener('abort', aborted, { once: true })
+    void pending.then((value) => {
+      signal.removeEventListener('abort', aborted)
+      resolve(value)
+    }, (error: unknown) => {
+      signal.removeEventListener('abort', aborted)
+      reject(error)
+    })
   })
 }
 function imageBlockIn(

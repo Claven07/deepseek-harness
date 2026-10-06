@@ -12,6 +12,7 @@ import type { ObservableSnapshot, SnapshotStore } from '@deepseek-ai/dsh-client-
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { ArbitrateKey, ArbitrateOutcome, Occurrence, ReferenceInsert, TokenSpan } from './draft-editor.ts'
 import type { InputSubmitMode, MessageSubmission } from './composer-submission.ts'
+import type { ReferenceDraftSnapshot } from '../input/reference-serialization.ts'
 
 /** Attachment payload passed to a claimed command submission. */
 export type SubmitAttachment =
@@ -253,6 +254,8 @@ export type ConsumeTokenGuard = ConsumeTokenRequest['guard']
 
 /** Published input state (the currency; per-session). */
 export interface InputState {
+  /** Shell-only reference intent, excluded from editor, history, persistence, and clipboard. */
+  readonly referenceMarks?: readonly TokenSpan[]
   /** Clipboard-text projection of the editor document (chips expanded to their clipboard form). */
   readonly draft: string
   /** Ordered runtime-only attachment ids; browser objects stay in ConversationController. */
@@ -277,6 +280,7 @@ export interface InputState {
  * promise bounded.
  */
 export interface SubmitAttempt {
+  readonly references?: ReferenceDraftSnapshot
   readonly seq: number
   readonly signal: AbortSignal
   /** Clipboard-projection draft captured before an optimistic default-send commit. */
@@ -298,7 +302,7 @@ export type InputEvent =
   /** The editor applied a claim-token replacement: enter claimed. */
   | { readonly type: 'claim'; readonly claim: CommandClaim }
   /** Enter submission with the current clipboard projection. */
-  | { readonly type: 'enter'; readonly mode: InputSubmitMode; readonly draft: string; readonly submission?: MessageSubmission }
+  | { readonly type: 'enter'; readonly mode: InputSubmitMode; readonly draft: string; readonly submission?: MessageSubmission; readonly references?: ReferenceDraftSnapshot }
   | { readonly type: 'adjudicated'; readonly attempt: SubmitAttempt; readonly outcome: PickOutcome }
   | { readonly type: 'adjudication-failed'; readonly attempt: SubmitAttempt; readonly message: string }
   /** Settlement carries the live clipboard projection for suffix-retention and claim re-entry decisions. */
@@ -330,5 +334,6 @@ export type InputEffect =
    * appended after the sent snapshot survives; interleaved edits cannot be
    * separated and clear whole); null clears unconditionally (attachment-only
    * sends have no draft to retain).
+   * An asserted attempt supplies draftRev; a newer draft must remain intact.
    */
-  | { readonly type: 'commit-draft'; readonly retainSuffixOf: string | null }
+  | { readonly type: 'commit-draft'; readonly retainSuffixOf: string | null; readonly draftRev?: number }

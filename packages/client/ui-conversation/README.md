@@ -44,6 +44,8 @@ Target packages declaration-merge their snapshot and Location data maps, then re
 <a id="shell-and-standard-props"></a>
 ## Shell and standard props
 
+The keyboard-accessible “Mark as reference” action captures ordinary selected text without changing the editor or inserting markup. Up to four non-overlapping complete reference surfaces remain transiently in the input shell; selection movement preserves them, while content mutations, including identical programmatic replacement, clear them. Submission captures an immutable cut and maps detect coordinates through clipboard chip expansions, asynchronous serialization, and final trim by position. Asserted sends use only `session.promptWithReferences`; commands, subagents, and blocked composers reject reference intent. Failed sends restore content and attachments without assertions, so retry requires new marking and a new request identity. A Host consumer lease is required; assertions convey intent only and cannot bypass downstream privacy checks.
+
 The shared image slot props keep display choices separate from durable references: `thumbnail` requests a contained attachment-list thumbnail, while `compact` requests a cropped gallery tile. An optional per-image `label` supplies the accessible display name; loading and cache identity still use the original attachment reference. [ui-attachment](../ui-attachment/README.md) owns rendering and the lightbox.
 
 The composer measures its expanded control groups after size, content, visibility, or font-loading changes. If they cannot share a line, the row sets `--dsh-composer-model-text-display: none` and `--dsh-composer-model-icon-display: block` for the model seat; their defaults are `block` and `none`. Wrapping remains available if even the icon cannot fit.

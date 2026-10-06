@@ -35,6 +35,11 @@ export type ArbitrateOutcome = 'consumed' | 'pick-highlighted' | 'pass'
  * are the submit-plane and trigger-pipeline verbs the editor does not own.
  */
 export interface ComposerKeyboard {
+  /** Mark a captured ordinary selection without editing content.
+   * @param span - revision-guarded selection.
+   * @returns whether intent was added.
+   */
+  markReference(span: TokenSpan): boolean
   /** Live machine state for event-handler reads (render reads go through useInput). */
   readonly snapshot: InputState
   /** The shell-owned Lexical editor the composer binds its contenteditable to. */

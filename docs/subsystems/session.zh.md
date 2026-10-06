@@ -897,6 +897,21 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 @Remote('prompt') prompt(request: SessionPromptRequest, signal: AbortSignal): Promise<SessionPromptValue>
 
 /**
+ * Admit explicit reference intent through a distinct, fail-closed Remote route.
+ * @param request - immutable final text, spans, attachments, and request identity.
+ * @param signal - cancellation before Inbox insertion; does not withdraw accepted work.
+ * @returns acknowledgement of the single asserted admission.
+ */
+@Remote('promptWithReferences') promptWithReferences(request: SessionPromptWithReferencesRequest, signal: AbortSignal): Promise<SessionPromptValue>
+
+/**
+ * Lease the Host-only synchronous reference consumer; never exposed through Remote.
+ * @param consumer - adapter callback for live committed user messages.
+ * @returns the exclusive consumer lease, whose disposal revokes transient intent.
+ */
+leaseReferenceAssertions(consumer: ReferenceAssertionConsumer): Disposable
+
+/**
  * Read one image proven reachable from the addressed Session log.
  * @param request - Session and attachment identities used for authorization.
  * @returns the durable attachment reference and base64-encoded bytes.

@@ -29,6 +29,7 @@ import type {} from '@deepseek-ai/dsh-goal/client'
 // api-remotes import already places it in every client program.
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ComposerBarProps } from '../contract/slots.ts'
+import type { TokenSpan } from '../contract/draft-editor.ts'
 import { DraftEditor } from '../input/editor/DraftEditor.tsx'
 import {
   focusDraftEditor, installDraftFilePicker, installDraftKeymap, installDraftWheel,
@@ -52,6 +53,8 @@ export const InputBar = memo(function InputBar({
   placeholder, accessory,
 }: InputBarProps) {
   const input = useInput(s => s)
+  const referenceSelection = useRef<TokenSpan | null>(null)
+  useLayoutEffect(() => { referenceSelection.current = null }, [sessionId])
   const notice = useNotices(s => s)
   const busyEnter = useBusyEnter(s => s)
   const stopKeys = useStopShortcut(keys => keys)
@@ -110,6 +113,10 @@ export const InputBar = memo(function InputBar({
     const { error } = promptError
     if (error.code === 'session/writer-held') {
       showToast(t('error.sessionInUse'))
+      return
+    }
+    if (error.code === 'session/reference-rejected') {
+      showToast(t('reference.sendFailed'))
       return
     }
     showToast(error.code === 'session/attachment-invalid' || error.code === 'subagent/attachment-invalid'
@@ -376,6 +383,11 @@ export const InputBar = memo(function InputBar({
         ref={cardRef}
         className={clsx(css.card, workspaceTrigger && css.cardWorkspaceTrigger)}
         data-composer-card
+        onBlurCapture={(event) => {
+          if (event.target === editor?.getRootElement() && inputActions !== undefined) {
+            referenceSelection.current = inputActions.captureInsertion()
+          }
+        }}
         onClick={workspaceTrigger ? onRequestWorkspace : undefined}
         onPointerDown={workspaceTrigger ? (e) => { e.stopPropagation() } : undefined}
       >
@@ -431,6 +443,23 @@ export const InputBar = memo(function InputBar({
                 <IconPlusOutlineMedium size={14} />
               </button>
             </Tooltip>
+            {inputActions === undefined ? null : <Tooltip label={t('reference.mark')} side="top" delayMs={500}>
+              <button
+                type="button"
+                className={css.reference}
+                disabled={locked}
+                onMouseDown={(event) => {
+                  referenceSelection.current = inputActions.captureInsertion()
+                  keepFocus(event)
+                }}
+                onFocus={() => { referenceSelection.current ??= inputActions.captureInsertion() }}
+                onClick={() => {
+                  const span = referenceSelection.current ?? inputActions.captureInsertion()
+                  if (subagent !== null || blocked !== undefined) showToast(t('reference.invalid'))
+                  else keyboard?.markReference(span)
+                }}
+              >{t('reference.mark')}</button>
+            </Tooltip>}
             <input
               ref={fileInputRef}
               type="file"

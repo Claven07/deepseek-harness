@@ -27,6 +27,12 @@ Desktop analytics follows the [product collection policy](../../client/product-a
 <a id="use-this-package"></a>
 ## Use this package
 
+`session.promptWithReferences` admits caller-declared reference intent separately from ordinary `session.prompt`. Its public DTOs are exported from `@deepseek-ai/dsh-api-session-controller/types`. The request contains exactly one final text block, with `referenceAssertions.text` equal to that block and one to four non-overlapping UTF-16 spans. Final text is limited to 1,200 code units. Spans preserve M6.1's ASCII reference surface and atom characters; ambiguous capture-relative endpoints, including an endpoint immediately before a period, fail closed. Intent establishes neither authorship, symbol existence, correctness, nor permission to bypass downstream privacy checks.
+
+A Host adapter acquires the exclusive `ctx.sessionController.leaseReferenceAssertions(consumer)` lease and consumes synchronously inside its live committed-message callback. Consumption binds the actual Session, Agent, request identity, MessageId, source correlation, and final text-block arrangement. The result distinguishes absent, asserted, invalid, and already-consumed intent; invalid and already-consumed results must suppress M6 extraction. Intent is removed before downstream work and cannot be rearmed by adapter failure. Disposing the lease revokes pending and in-flight assertions. The adapter owns its disposer through a Cordis effect.
+
+Asserted admission requires an attached ordinary Session and a consumer lease. It reserves request identity before asynchronous admission, shares identical concurrent requests, and rejects conflicting or unverifiable historical retries. Queue edits revoke intent even for identical text; removal retires it, while steering moves the same batch. Active cancellation retires claimed batches and preserves other queued batches. Disposal and rejected turns purge their state; restore and fork never restore assertions. Assertions remain outside messages, source metadata, telemetry, errors, and durable events. Unsupported asserted routes fail explicitly without ordinary-prompt fallback.
+
 History pages and follow opening snapshots carry one `{ type: 'event', event: SessionWireEvent }` record per durable Session event. The Client retains each accepted record as one durable `SessionEventLikeEntry`; Assistant token boundaries remain inside the compact stream on `assistant/message` or `assistant/attempt`. Tool arguments, result content, failures, and `tool/result.data.meta` pass through unchanged; the controller does not resolve a Tool definition, run a presenter, or attach UI data.
 
 The Client journal validates current Session event envelopes before publishing follow snapshots, live entries, or history pages. It reuses the browser-safe Session validators for required surface markers, exact replacement endpoints, earlier unique source seqs, embedded Assistant provider metadata, request-header omissions, and tool-error consistency. Invalid records fail without field stripping or normalization; range membership and source existence remain durable-log checks on the Host.
@@ -92,6 +98,7 @@ A successful `selectModel` response acknowledges the Session-local selection wit
 | Field | Default | Meaning |
 |---|---:|---|
 | `nativeOpen` | platform-detected | Whether Session workspace paths can be handed to a native desktop opener |
+| `referenceAssertionCapacity` | `128` | Positive safe integer bounding live assertions and retained admission receipts; capacity rejects without evicting live intent |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-api-session-controller) is the exhaustive source for accepted fields and their JSDoc.
 
